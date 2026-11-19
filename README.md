@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](requirements.txt)
-[![Tests](https://img.shields.io/badge/tests-42%20passed-green.svg)](tests/)
+[![Tests](https://github.com/Mists-Star/qq-agent-kit/actions/workflows/tests.yml/badge.svg)](https://github.com/Mists-Star/qq-agent-kit/actions/workflows/tests.yml)
 
 一个轻量、自托管、协议宽松的 QQ 机器人接入脚手架。基于 NapCat / OneBot v11，把"长期稳定运行"的工程问题一次性解决，把人格、记忆、业务能力留给部署方自己定义。
 
