@@ -120,7 +120,7 @@ qq-agent-kit/
 python -m unittest discover -s tests -v
 ```
 
-共 66+ 个测试，覆盖：登录熔断全流程、告警去重与分级、重启后状态保持、人工确认解锁、退避上限、启动协调器、安全切句、退化检测（多周期）、频控与 AI 额度、空间模块分级授权与 action 白名单、主循环全链路集成。
+共 89 个测试，覆盖：登录熔断全流程、告警去重与分级、重启后状态保持、人工确认解锁、退避上限、启动协调器、安全切句、退化检测（多周期）、频控与 AI 额度、空间模块分级授权与 action 白名单、主循环全链路集成。
 
 查看线上 CI 状态（无需安装 gh）：
 
@@ -129,6 +129,12 @@ python tools/ci_status.py                          # 匿名 GitHub API
 GITHUB_TOKEN=xxx python tools/ci_status.py         # 带 token（推荐）
 # 无法直连 GitHub 时，可设置 DEVHUB_API / DEVHUB_KEY 走兼容的加速转发端点
 ```
+
+---
+
+## 关键词
+
+**QQ Bot** · **OneBot v11** · **OneBot 11** · **NapCat** · QQ 机器人 · 聊天机器人框架 · Python 机器人脚手架 · 自托管机器人 · OneBot Python SDK · bot framework · chatbot scaffold · 频控 · 熔断守护 · 单实例锁 · 退化输出检测 · 安全切句 · Windows / macOS / Linux 跨平台
 
 ---
 
