@@ -1,0 +1,6 @@
+# 核心运行不依赖第三方库（标准库即可跑通核心模块与测试）
+# 以下为可选依赖，按需取消注释：
+
+# websockets>=12.0          # OneBot 正向 WS 事件接收（core/onebot.py 异步模式）
+# notifypy>=1.2             # 系统托盘气泡告警（notifier.ToastChannel）
+# aiohttp>=3.9              # 若需异步 HTTP 调用 LLM API

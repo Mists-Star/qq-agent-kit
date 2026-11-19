@@ -1,0 +1,21 @@
+# 运行时状态 / 告警（可能含账号信息）
+state/
+logs/
+
+# 实际配置与人格（模板才入库）
+config.json
+myconfig.json
+persona/core.md
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.tmp
