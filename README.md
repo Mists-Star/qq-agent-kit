@@ -3,12 +3,15 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](requirements.txt)
 [![Tests](https://github.com/Mists-Star/qq-agent-kit/actions/workflows/tests.yml/badge.svg)](https://github.com/Mists-Star/qq-agent-kit/actions/workflows/tests.yml)
+[![Release](https://img.shields.io/github/v/release/Mists-Star/qq-agent-kit)](https://github.com/Mists-Star/qq-agent-kit/releases)
 
 一个轻量、自托管、协议宽松的 QQ 机器人接入脚手架。基于 NapCat / OneBot v11，把"长期稳定运行"的工程问题一次性解决，把人格、记忆、业务能力留给部署方自己定义。
 
 **核心特点：登录失败优先告警、绝不无限重试。** 这一条是硬规则，见 [SAFETY.md](docs/SAFETY.md)。
 
 **跨平台**：核心逻辑在 Windows / macOS / Linux 均可运行（Python 3.10+，标准库为主）。协议端 NapCat 支持 Windows 原生、Mac 安装器、Docker 三种方式，框架只需通过 OneBot v11 连接——详见 [USAGE.md](USAGE.md)。
+
+**版本**：当前 [v0.1.0](https://github.com/Mists-Star/qq-agent-kit/releases/tag/v0.1.0)（首个版本，89 测试 CI 全绿）。
 
 ---
 
