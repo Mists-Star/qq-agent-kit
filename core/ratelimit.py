@@ -28,16 +28,23 @@ class RateLimiter:
         self._buckets: dict[tuple[int, str], deque[float]] = defaultdict(deque)
         self._lock = threading.Lock()
 
-    def check(self, user_id: int, *, is_ai: bool = False) -> tuple[bool, str]:
-        """检查是否放行。返回 (是否放行, 原因)。不消耗额度。"""
+    def check(self, user_id: int, *, is_ai: bool = False, skip_general: bool = False) -> tuple[bool, str]:
+        """检查是否放行。返回 (是否放行, 原因)。不消耗额度。
+
+        Args:
+            is_ai: 是否同时校验 AI 专用额度。
+            skip_general: 跳过普通三层频控，只查 AI 额度。
+                用于"入站频控已通过、只需额外查 AI 额度"的场景。
+        """
         now = self._clock()
         with self._lock:
-            if self._count(user_id, "min", 60, now) >= self.config.per_minute:
-                return False, "每分钟次数超限"
-            if self._count(user_id, "hour", 3600, now) >= self.config.per_hour:
-                return False, "每小时次数超限"
-            if self._count(user_id, "day", 86400, now) >= self.config.per_day:
-                return False, "每日次数超限"
+            if not skip_general:
+                if self._count(user_id, "min", 60, now) >= self.config.per_minute:
+                    return False, "每分钟次数超限"
+                if self._count(user_id, "hour", 3600, now) >= self.config.per_hour:
+                    return False, "每小时次数超限"
+                if self._count(user_id, "day", 86400, now) >= self.config.per_day:
+                    return False, "每日次数超限"
             if is_ai:
                 d = self._buckets[(user_id, "ai_day")]
                 self._prune(d, now, 86400)
@@ -46,13 +53,42 @@ class RateLimiter:
         return True, "ok"
 
     def consume(self, user_id: int, *, is_ai: bool = False) -> None:
-        """消耗一次额度（check 通过后调用）。"""
+        """消耗一次额度（check 通过后调用）。
+
+        is_ai=True 时只记入 AI 专用额度：普通额度已在入站时消耗，
+        重复记账会导致 AI 回复被双重计数。
+        """
         now = self._clock()
         with self._lock:
-            for key, window in (("min", 60), ("hour", 3600), ("day", 86400)):
-                self._buckets[(user_id, key)].append(now)
             if is_ai:
                 self._buckets[(user_id, "ai_day")].append(now)
+            else:
+                for key, window in (("min", 60), ("hour", 3600), ("day", 86400)):
+                    self._buckets[(user_id, key)].append(now)
+
+    def check_and_consume(self, user_id: int, *, is_ai: bool = False, skip_general: bool = False) -> tuple[bool, str]:
+        """原子版 check+consume，避免两者分离导致的 TOCTOU。"""
+        now = self._clock()
+        with self._lock:
+            if not skip_general:
+                if self._count(user_id, "min", 60, now) >= self.config.per_minute:
+                    return False, "每分钟次数超限"
+                if self._count(user_id, "hour", 3600, now) >= self.config.per_hour:
+                    return False, "每小时次数超限"
+                if self._count(user_id, "day", 86400, now) >= self.config.per_day:
+                    return False, "每日次数超限"
+            if is_ai:
+                d = self._buckets[(user_id, "ai_day")]
+                self._prune(d, now, 86400)
+                if len(d) >= self.config.ai_quota_day:
+                    return False, "AI 专用额度已用尽"
+            # 全部通过，原子记账
+            if is_ai:
+                self._buckets[(user_id, "ai_day")].append(now)
+            else:
+                for key in ("min", "hour", "day"):
+                    self._buckets[(user_id, key)].append(now)
+        return True, "ok"
 
     def reset(self, user_id: int | None = None) -> None:
         with self._lock:

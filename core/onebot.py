@@ -29,11 +29,15 @@ class OneBotConfig:
 
 
 class OneBotClient:
-    def __init__(self, config: OneBotConfig, on_event: Callable[[dict[str, Any]], Awaitable[None]]):
+    def __init__(
+        self,
+        config: OneBotConfig,
+        on_event: Callable[[dict[str, Any]], Awaitable[None]],
+        on_event_error: Callable[[Exception, dict[str, Any]], None] | None = None,
+    ):
         self.config = config
         self.on_event = on_event
-        self._echo = 0
-        self._pending: dict[str, asyncio.Future] = {}
+        self.on_event_error = on_event_error
         self._seq = 0
 
     # ---------- HTTP action ----------
@@ -51,7 +55,16 @@ class OneBotClient:
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+            data = json.loads(resp.read().decode("utf-8"))
+        # HTTP 200 不代表 action 成功：retcode≠0 一律视为失败，交给上层告警
+        rc = data.get("retcode", 0)
+        try:
+            rc_num = int(rc)
+        except (ValueError, TypeError):
+            rc_num = -1
+        if rc_num != 0:
+            raise RuntimeError(f"{action} 返回 retcode={rc}: {data.get('message', data.get('wording', ''))}")
+        return data
 
     def send_private_msg(self, user_id: int, text: str, **kw: Any) -> dict[str, Any]:
         return self.call_api("send_private_msg", {"user_id": user_id, "message": text, **kw})
@@ -71,16 +84,50 @@ class OneBotClient:
         return True, f"登录号 {uin}"
 
     # ---------- WS 事件循环 ----------
+    @staticmethod
+    def check_ws_dependency() -> str:
+        """启动前检查 WS 依赖；缺失或版本不兼容返回人类可读错误，否则返回空串。
+
+        依赖错误是配置问题，必须 fail-fast，不能当成连接异常去无限重连。
+        """
+        try:
+            import websockets  # type: ignore[import-not-found]
+        except ImportError:
+            return (
+                "缺少依赖 websockets：请执行 pip install websockets "
+                "（WS 事件接收必需；HTTP action 单独可用）"
+            )
+        # 探测 connect 支持的关键字参数（13+ 改名 additional_headers，14+ 移除 extra_headers）
+        import inspect
+
+        try:
+            sig = inspect.signature(websockets.connect)
+            params = sig.parameters
+        except (ValueError, TypeError):
+            return ""  # 无法内省时不阻断，运行时兼容回退兜底
+        if "additional_headers" not in params and "extra_headers" not in params:
+            return (
+                f"websockets 版本 {getattr(websockets, '__version__', '?')} 的 connect() "
+                "不支持 headers 参数，请安装 websockets>=12,<15"
+            )
+        return ""
+
     async def run_forever(self, *, on_reconnect: Callable[[int], None] | None = None) -> None:
-        """带指数退避 + 抖动的 WS 长连接。需要 websockets 库（可选依赖）。"""
+        """带指数退避 + 抖动的 WS 长连接。依赖错误在启动前已校验，这里只处理连接异常。"""
+        err = self.check_ws_dependency()
+        if err:
+            raise RuntimeError(err)
         attempt = 0
         while True:
+            disconnected = False
             try:
                 await self._ws_once()
-                attempt = 0
+                disconnected = True  # 正常返回 = 服务端干净关闭，也要退避
             except asyncio.CancelledError:
                 raise
-            except Exception as exc:
+            except Exception:
+                disconnected = True
+            if disconnected:
                 attempt += 1
                 if on_reconnect:
                     on_reconnect(attempt)
@@ -92,18 +139,34 @@ class OneBotClient:
                 await asyncio.sleep(max(0.5, delay))
 
     async def _ws_once(self) -> None:
+        import inspect
+
         import websockets  # type: ignore[import-not-found]
 
-        extra = {"Authorization": f"Bearer {self.config.access_token}"} if self.config.access_token else None
-        async with websockets.connect(self.config.ws_url, extra_headers=extra) as ws:  # type: ignore[call-arg]
+        headers = {"Authorization": f"Bearer {self.config.access_token}"} if self.config.access_token else None
+        # 版本兼容：13+ 用 additional_headers，旧版用 extra_headers
+        try:
+            params = inspect.signature(websockets.connect).parameters
+        except (ValueError, TypeError):
+            params = {}
+        if "additional_headers" in params:
+            ws_ctx = websockets.connect(self.config.ws_url, additional_headers=headers)
+        elif "extra_headers" in params:
+            ws_ctx = websockets.connect(self.config.ws_url, extra_headers=headers)
+        else:
+            ws_ctx = websockets.connect(self.config.ws_url)
+        async with ws_ctx as ws:
             async for raw in ws:
                 try:
                     evt = json.loads(raw)
                 except Exception:
                     continue
-                if "echo" in evt and evt.get("echo") in self._pending:
-                    fut = self._pending.pop(evt["echo"])
-                    if not fut.done():
-                        fut.set_result(evt)
-                    continue
-                asyncio.create_task(self.on_event(evt))
+                try:
+                    await self.on_event(evt)
+                except Exception as exc:
+                    # 单个事件处理失败不中断连接；上报给宿主记录，不静默吞
+                    if self.on_event_error:
+                        try:
+                            self.on_event_error(exc, evt)
+                        except Exception:
+                            pass

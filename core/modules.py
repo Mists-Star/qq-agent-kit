@@ -55,6 +55,9 @@ class ModuleRegistry:
         self._errors: list[tuple[str, str, str]] = []
 
     def register(self, module: Module) -> None:
+        # 同名模块先移除旧钩子，避免替换后旧实例"复活"、钩子双执行
+        for hook_list in self._hooks.values():
+            hook_list[:] = [(n, f) for n, f in hook_list if n != module.name]
         self._modules[module.name] = module
         for hook in (
             "on_private_message",
@@ -85,6 +88,9 @@ class ModuleRegistry:
             except Exception as exc:
                 # 单模块异常隔离：记录但不外抛
                 self._errors.append((name, hook, f"{type(exc).__name__}: {exc}"))
+                # 环形缓冲：只保留最近 100 条，防长期运行内存无限增长
+                if len(self._errors) > 100:
+                    del self._errors[:-100]
                 print(f"[module {name}.{hook}] {exc}", file=sys.stderr)
 
     @property

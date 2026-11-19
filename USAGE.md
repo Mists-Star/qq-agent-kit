@@ -81,10 +81,10 @@ python bot.py
 
 ## 2. 配置文件（可选）
 
-默认配置写在 `bot.py` 的 `BotConfig` 里。要覆盖，复制模板改字段，然后用 `--config` 指定：
+默认配置写在 `bot.py` 的 `BotConfig` 里。要覆盖，复制 JSON 模板改字段，然后用 `--config` 指定：
 
 ```bash
-cp config.example.yaml myconfig.json   # 注意：--config 读 JSON，不是 YAML
+cp config.example.json myconfig.json
 python bot.py --config myconfig.json
 ```
 
@@ -101,7 +101,7 @@ python bot.py --config myconfig.json
 }
 ```
 
-字段含义见 `config.example.yaml` 注释。
+字段含义见 `config.example.json`（全字段模板）。未知键会**明确报错**，不会静默忽略——拼错 `expect_uin` 会立刻提示。
 
 > `expect_uin` 强烈建议填——它会核对实际登录的号，防止连错账号触发风控。
 
@@ -237,7 +237,7 @@ g.human_confirm()
 python -m unittest discover -s tests -v
 ```
 
-当前约 42 个测试，覆盖：登录熔断、告警去重、重启保持、切句括号、退化检测、频控、空间授权、主循环全链路。
+当前 48+ 个测试，覆盖：登录熔断、告警去重与分级、重启保持、切句括号、退化检测（多周期）、频控与 AI 额度、空间授权、主循环全链路。
 
 ---
 

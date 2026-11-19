@@ -105,8 +105,16 @@ class QZoneBridge:
         )
         with urllib.request.urlopen(req, timeout=self.config.timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-        if data.get("retcode") not in (0, None):
-            raise QZoneError(f"{action} retcode={data.get('retcode')}: {data.get('data')}")
+        # retcode 兼容：0/0.0/"0" 都算成功；缺字段视为格式错误（不静默放行）
+        if "retcode" not in data:
+            raise QZoneError(f"{action} 响应缺少 retcode: {str(data)[:200]}")
+        rc = data["retcode"]
+        try:
+            rc_num = int(rc)
+        except (ValueError, TypeError):
+            rc_num = -1
+        if rc_num != 0:
+            raise QZoneError(f"{action} retcode={rc}: {data.get('data')}")
         return data
 
     # ---------- 读操作 ----------

@@ -4,7 +4,14 @@ logs/
 
 # 实际配置与人格（模板才入库）
 config.json
+config.yaml
 myconfig.json
+myconfig.yaml
+*.local.json
+*.local.yaml
+.env
+*.key
+*.pem
 persona/core.md
 
 # Python

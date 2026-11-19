@@ -50,11 +50,18 @@ class BotConfig:
     @classmethod
     def from_json(cls, path: Path) -> "BotConfig":
         data = json.loads(path.read_text(encoding="utf-8"))
-        cfg = cls()
+        if not isinstance(data, dict):
+            raise ValueError(f"配置文件必须是 JSON 对象: {path}")
         allowed = {f.name for f in cls.__dataclass_fields__.values()}  # type: ignore[attr-defined]
+        unknown = set(data) - allowed
+        if unknown:
+            # 未知键明确报错，不静默忽略（否则拼错 expect_uin 也毫无提示）
+            raise ValueError(f"未知配置项: {sorted(unknown)}（可用项: {sorted(allowed)}）")
+        cfg = cls()
         for k, v in data.items():
-            if k in allowed:
-                setattr(cfg, k, v)
+            if k == "base_dir":
+                v = Path(v)
+            setattr(cfg, k, v)
         return cfg
 
 
@@ -96,10 +103,20 @@ class BotApp:
                 expect_uin=config.expect_uin,
             ),
             on_event=self.on_event,
+            on_event_error=self._on_event_error,
         )
         self._lock = SingleInstanceLock(base / "state" / "bot.lock")
 
     # ---------- 启动 ----------
+    def _on_event_error(self, exc: Exception, evt: dict[str, Any]) -> None:
+        """事件处理异常上报：不静默吞，写告警。"""
+        self.notifier.notify(
+            title=f"[{self.config.alert_tag}] 事件处理异常",
+            body=f"{type(exc).__name__}: {exc}"[:300],
+            level="warning",
+            fingerprint=f"event:error:{type(exc).__name__}",
+        )
+
     async def boot(self) -> BootResult:
         """带熔断的登录。失败即告警停手，不无限重试。"""
         if not self._lock.acquire():
@@ -111,26 +128,64 @@ class BotApp:
             )
             return BootResult(False, self.guard.state.phase, 0, "已有实例在运行")
 
+        # 依赖错误 fail-fast：不把"缺库/版本不对"当成连接异常去无限重连
+        try:
+            dep_err = self.client.check_ws_dependency()
+        except Exception as exc:
+            dep_err = f"依赖检查失败: {exc}"
+        if dep_err:
+            self._lock.release()
+            self.notifier.notify(
+                title=f"[{self.config.alert_tag}] 启动失败·依赖",
+                body=dep_err,
+                level="critical",
+                fingerprint="boot:dependency",
+            )
+            return BootResult(False, self.guard.state.phase, 0, dep_err)
+
         async def try_login() -> tuple[bool, str]:
             return self.client.verify_login()
 
-        result = await login_with_guard(self.guard, try_login)
+        try:
+            result = await login_with_guard(self.guard, try_login)
+        except Exception as exc:
+            # 任何未预期异常也要释放锁，避免残留死锁
+            self._lock.release()
+            self.notifier.notify(
+                title=f"[{self.config.alert_tag}] 启动异常",
+                body=f"{type(exc).__name__}: {exc}"[:300],
+                level="critical",
+                fingerprint="boot:exception",
+            )
+            return BootResult(False, self.guard.state.phase, 0, f"启动异常: {exc}")
         if not result.ok:
             self._lock.release()
         return result
 
     # ---------- 事件处理 ----------
+    @staticmethod
+    def _as_int(value: Any) -> int:
+        """容错整数转换：畸形事件字段归零，不让 ValueError 杀掉 task。"""
+        try:
+            return int(value or 0)
+        except (ValueError, TypeError):
+            return 0
+
     async def on_event(self, evt: dict[str, Any]) -> None:
-        if evt.get("post_type") != "message":
+        post_type = evt.get("post_type")
+        if post_type == "notice":
+            # 通知类事件交给模块钩子（此前 on_notice 注册了却从不 emit）
+            await self.registry.emit("on_notice", Context(raw=evt))
             return
-        user_id = int(evt.get("user_id", 0) or 0)
-        group_id = int(evt.get("group_id", 0) or 0)
+        if post_type != "message":
+            return
+        user_id = self._as_int(evt.get("user_id"))
+        group_id = self._as_int(evt.get("group_id"))
         text = str(evt.get("raw_message", "") or "")
 
-        ok, reason = self.limiter.check(user_id)
+        ok, reason = self.limiter.check_and_consume(user_id)
         if not ok:
             return  # 频控拒绝，静默丢弃（不告警，避免噪声）
-        self.limiter.consume(user_id)
 
         replies: list[str] = []
 
@@ -142,15 +197,32 @@ class BotApp:
         await self.registry.emit(hook, ctx)
 
         if not replies and self.generate_reply:
-            generated = await self.generate_reply(ctx)
-            if generated:
-                replies.append(generated)
+            # AI 专用额度独立核算：与入站消息频控分开，真正防成本失控
+            ai_ok, ai_reason = self.limiter.check_and_consume(user_id, is_ai=True, skip_general=True)
+            if not ai_ok:
+                self.notifier.notify(
+                    title=f"[{self.config.alert_tag}] AI 额度已用尽",
+                    body=ai_reason,
+                    level="warning",
+                    fingerprint="ai:quota_exhausted",
+                )
+            else:
+                generated = await self.generate_reply(ctx)
+                if generated:
+                    replies.append(generated)
 
         for text_out in replies:
             await self.deliver(user_id, group_id, text_out)
 
     async def deliver(self, user_id: int, group_id: int, text: str) -> None:
-        """安全切句 + 退化检测 + 逐句发送。"""
+        """before_send 改写 -> 退化检测 -> 安全切句 -> 逐句异步发送。"""
+        # 给模块最后一次改写/拦截出站内容的机会
+        out_ctx = Context(text=text, user_id=user_id, group_id=group_id)
+        await self.registry.emit("before_send", out_ctx)
+        text = out_ctx.text
+        if not text:
+            return
+
         if self.detector.is_degenerate(text):
             self.notifier.notify(
                 title=f"[{self.config.alert_tag}] 已拦截退化输出",
@@ -160,16 +232,17 @@ class BotApp:
             )
             return
         for sentence in safe_sentence_cut(text):
-            self._send(user_id, group_id, sentence)
+            await self._send(user_id, group_id, sentence)
             if self.config.send_interval_sec > 0:
                 await asyncio.sleep(self.config.send_interval_sec)
 
-    def _send(self, user_id: int, group_id: int, text: str) -> None:
+    async def _send(self, user_id: int, group_id: int, text: str) -> None:
+        """同步 HTTP 调用丢到线程池，不阻塞 asyncio 事件循环。"""
         try:
             if group_id:
-                self.client.send_group_msg(group_id, text)
+                await asyncio.to_thread(self.client.send_group_msg, group_id, text)
             else:
-                self.client.send_private_msg(user_id, text)
+                await asyncio.to_thread(self.client.send_private_msg, user_id, text)
         except Exception as exc:
             self.notifier.notify(
                 title=f"[{self.config.alert_tag}] 消息发送失败",

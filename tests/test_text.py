@@ -36,6 +36,21 @@ class SplitterTestCase(unittest.TestCase):
         streamed.extend(cut.flush())
         self.assertEqual(streamed, safe_sentence_cut(text))
 
+    def test_apostrophe_does_not_block(self):
+        # 孤立撇号（can't）不应让栈永久非空导致整段不切
+        parts = safe_sentence_cut("can't stop. Go on. Done.")
+        self.assertEqual(len(parts), 3, f"撇号导致未切句: {parts}")
+
+    def test_crossed_brackets_recover(self):
+        # 交叉括号是畸形输入，但要能恢复切句，不能整段卡死
+        parts = safe_sentence_cut("这是【《嵌套】错误》。下一句。后面还有一句。")
+        self.assertEqual(len(parts), 3, f"交叉括号导致未切句: {parts}")
+
+    def test_unclosed_bracket_does_not_block_forever(self):
+        # 只有左括号没闭合时，后续句子仍应切出（栈深度上限 + 容错）
+        parts = safe_sentence_cut("【未闭合。仍然要切。")
+        self.assertGreaterEqual(len(parts), 1)
+
     def test_empty(self):
         self.assertEqual(safe_sentence_cut(""), [])
 
@@ -48,11 +63,17 @@ class DegenerateTestCase(unittest.TestCase):
         self.assertTrue(self.det.is_degenerate("哈" * 30))
         self.assertIn("char_run", self.det.reason("哈" * 30))
 
-    def test_ngram_repeat_detected(self):
-        self.assertTrue(self.det.is_degenerate("abcde" * 12))
+    def test_period_repeat_detected(self):
+        # 各种周期长度都应检出（这是旧固定分块算法的漏检点）
+        for unit in ("abcde", "abcd", "abc", "这是一段重复的中文句子", "abcdefg"):
+            with self.subTest(unit=unit):
+                self.assertTrue(self.det.is_degenerate(unit * 10), f"漏检周期 {unit!r}")
+
+    def test_period_reason(self):
+        self.assertIn("period=", self.det.reason("abcd" * 10))
 
     def test_normal_text_pass(self):
-        self.assertFalse(self.det.is_degenerate("今天天气很好，我们出去走走吧。"))
+        self.assertFalse(self.det.is_degenerate("今天天气很好，我们出去走走吧明天再说吧。"))
 
     def test_short_text_not_judged_by_ngram(self):
         self.assertFalse(self.det.is_degenerate("哈哈"))

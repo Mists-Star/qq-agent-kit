@@ -18,6 +18,10 @@ class FakeClient:
         self.login_ok = login_ok
         self.sent: list[tuple[int, int, str]] = []
 
+    @staticmethod
+    def check_ws_dependency() -> str:
+        return ""  # 模拟依赖就绪，真实检查由 test_onebot 覆盖
+
     def verify_login(self):
         return (True, "ok") if self.login_ok else (False, "login expired")
 

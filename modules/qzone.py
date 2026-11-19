@@ -70,6 +70,8 @@ class QZoneModule(Module):
             await self._status(ctx)
         elif cmd in ("/确认", "/取消"):
             await self._confirm(ctx, cmd == "/确认")
+        elif cmd == "/删除说说":
+            await self._request_danger(ctx, "delete_msg", {"tid": arg})
         elif cmd == "/空间帮助":
             await self._help(ctx)
 
@@ -107,8 +109,27 @@ class QZoneModule(Module):
         except QZoneError as exc:
             await ctx.reply(f"桥接服务不可用：{exc}")
 
+    async def _request_danger(self, ctx: Context, action: str, params: dict) -> None:
+        """危险动作（删除类）：先登记待确认，不立即执行。"""
+        if not self._can_write(ctx.user_id):
+            await ctx.reply("空间写操作未启用或账号未授权。")
+            return
+        if action in self.config.requires_confirm:
+            self._pending_confirm[ctx.user_id] = (action, params)
+            await ctx.reply(
+                f"此操作需要确认：{action} {params}。"
+                "确认请发 /确认，取消请发 /取消。"
+            )
+            return
+        # 非危险动作直接执行
+        try:
+            self.bridge.call(action, params)
+            await ctx.reply("已执行。")
+        except QZoneError as exc:
+            await ctx.reply(f"执行失败：{exc}")
+
     async def _confirm(self, ctx: Context, agree: bool) -> None:
-        """二次确认处理（占位）：危险动作先登记，确认后再执行。"""
+        """二次确认：执行已登记的危险动作。"""
         pending = self._pending_confirm.pop(ctx.user_id, None)
         if not pending:
             await ctx.reply("没有待确认的操作。")
@@ -128,6 +149,6 @@ class QZoneModule(Module):
 
     async def _help(self, ctx: Context) -> None:
         await ctx.reply(
-            "空间命令：/说说 <内容> · /日记 <内容> · /空间动态 · /空间状态 · /确认 · /取消。"
-            "写操作需启用并授权。"
+            "空间命令：/说说 <内容> · /日记 <内容> · /空间动态 · /空间状态 · "
+            "/删除说说 <tid>（需二次确认）· /确认 · /取消。写操作需启用并授权。"
         )

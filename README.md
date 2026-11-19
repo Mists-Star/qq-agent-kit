@@ -57,14 +57,15 @@ python -m venv .venv
 .venv\Scripts\pip install -r requirements.txt   # Windows
 # 或 source .venv/bin/activate && pip install -r requirements.txt
 
-# 2. 配置（复制模板后填写）
-cp config.example.yaml config.yaml
+# 2. 配置（复制模板后填写；可选，不配则用默认值）
+cp config.example.json myconfig.json
 cp persona/core.example.md persona/core.md      # 人格由部署方自己写
 
 # 3. 起协议端：NapCat，WS 15701 / HTTP 15700，扫码登录
 
 # 4. 启动
-python -m core.boot
+python bot.py                                   # 默认配置
+# 或 python bot.py --config myconfig.json       # 用自定义配置
 ```
 
 > 登录失败时不会反复重试：连续 3 次失败即熔断并告警，停手等待人工扫码。见 [SAFETY.md](docs/SAFETY.md)。
@@ -79,7 +80,7 @@ qq-agent-kit/
 ├── README.md
 ├── USAGE.md                完整使用指南
 ├── CONTRIBUTING.md         贡献指南
-├── config.example.yaml     配置模板（无敏感信息）
+├── config.example.json     配置模板（JSON，无敏感信息）
 ├── requirements.txt
 ├── core/
 │   ├── guard.py            ★ 登录守护状态机（fail-fast + 熔断）
@@ -116,7 +117,7 @@ qq-agent-kit/
 python -m unittest discover -s tests -v
 ```
 
-共 42 个测试，覆盖：登录熔断全流程、告警去重、重启后状态保持、人工确认解锁、退避上限、启动协调器、安全切句、退化检测、频控、空间模块分级授权与 action 白名单、主循环全链路集成。
+共 48+ 个测试，覆盖：登录熔断全流程、告警去重与分级、重启后状态保持、人工确认解锁、退避上限、启动协调器、安全切句、退化检测（多周期）、频控与 AI 额度、空间模块分级授权与 action 白名单、主循环全链路集成。
 
 查看线上 CI 状态（无需安装 gh）：
 

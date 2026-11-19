@@ -1,0 +1,13 @@
+{
+  "ws_url": "ws://127.0.0.1:15701",
+  "http_url": "http://127.0.0.1:15700",
+  "access_token": "",
+  "expect_uin": 0,
+  "max_failures": 3,
+  "alert_tag": "My Bot",
+  "per_minute": 30,
+  "per_hour": 200,
+  "per_day": 1000,
+  "ai_quota_day": 500,
+  "send_interval_sec": 0.05
+}

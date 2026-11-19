@@ -98,8 +98,9 @@ class GuardConfig:
     base_backoff_sec: float = 2.0    # 退避基数（指数增长）
     max_backoff_sec: float = 60.0    # 退避上限
     jitter: float = 0.3              # 抖动比例 ±30%
-    stale_after_sec: float = 1800.0  # 熔断状态超过 30 分钟才允许自动清（默认不清）
     alert_tag: str = "QQ Bot"        # 告警标题前缀，部署方可自行改成自己的机器人名
+
+    # 熔断永不自动解除：只有 human_confirm() 是唯一解锁入口（硬规则 3）。
 
 
 @dataclass
@@ -118,11 +119,25 @@ class GuardState:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "GuardState":
+        if not isinstance(d, dict):
+            return cls()
         d = dict(d)
+        # phase 可能是 dict/list，LoginPhase() 会抛 TypeError；兼容捕获
         try:
             d["phase"] = LoginPhase(d.get("phase", "idle"))
-        except ValueError:
+        except (ValueError, TypeError):
             d["phase"] = LoginPhase.IDLE
+        # 数值字段做类型回退，避免 fail_count 为字符串时 +=1 崩溃
+        try:
+            d["fail_count"] = max(0, int(d.get("fail_count", 0) or 0))
+        except (ValueError, TypeError):
+            d["fail_count"] = 0
+        for key in ("last_attempt_ts", "tripped_ts"):
+            try:
+                d[key] = float(d.get(key, 0) or 0)
+            except (ValueError, TypeError):
+                d[key] = 0.0
+        d["notified"] = bool(d.get("notified", False))
         allowed = {f.name for f in cls.__dataclass_fields__.values()}  # type: ignore[attr-defined]
         return cls(**{k: v for k, v in d.items() if k in allowed})
 
@@ -184,10 +199,13 @@ class LoginGuard:
 
     # ---------- 状态迁移 ----------
     def begin(self) -> GuardState:
-        """开始一次登录流程。熔断态下直接拒绝。"""
+        """开始一次登录流程。熔断态下拒绝；仅首次告警，不周期轰炸。"""
         ok, reason = self.can_attempt()
         if not ok:
-            self._alert_tripped(reason=reason)
+            if not self.state.notified:
+                self._alert_tripped(reason=reason)
+                self.state.notified = True
+                self._persist()
             return self.state
         self.state.phase = LoginPhase.QUICK_LOGIN
         self.state.last_attempt_ts = self._clock()
@@ -236,7 +254,13 @@ class LoginGuard:
         return self.state
 
     def mark_offline(self, error: str = "connection lost") -> GuardState:
-        """运行中被踢下线。不直接重试，交由调用方走 begin() 重新评估。"""
+        """运行中被踢下线。不直接重试，交由调用方走 begin() 重新评估。
+
+        熔断态下拒绝解锁：只有 human_confirm() 能解除熔断（硬规则 3）。
+        否则会出现"残留 fail_count 静默再熔断"的假恢复。
+        """
+        if self.is_tripped:
+            return self.state
         self.state.phase = LoginPhase.IDLE
         self.state.last_error = error
         self._persist()

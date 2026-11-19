@@ -94,18 +94,27 @@ class CallbackChannel(Channel):
 
 @dataclass
 class WebhookChannel(Channel):
-    """HTTP POST JSON，接企业微信/钉钉/Server酱等。"""
+    """HTTP POST JSON，接企业微信/钉钉/Server酱等。
+
+    payload 用 json.dumps 整体构造，杜绝字符串拼接/format 造成的非法 JSON
+    （此前模板花括号未转义，str.format 直接 KeyError）。
+    """
 
     url: str
     name: str = "webhook"
     enabled: bool = True
     timeout: float = 5.0
-    # 企业微信机器人格式：{"msgtype":"text","text":{"content":"..."}}
-    template: str = '{"msgtype":"text","text":{"content":"{text}"}}'
+
+    def build_payload(self, title: str, body: str, level: str) -> str:
+        """生成企业微信机器人格式的 JSON。可被单测独立校验。"""
+        text = f"[{level.upper()}] {title}\n{body}"
+        return json.dumps(
+            {"msgtype": "text", "text": {"content": text}},
+            ensure_ascii=False,
+        )
 
     def send(self, title: str, body: str, level: str, extra: dict[str, Any] | None = None) -> bool:
-        text = f"[{level.upper()}] {title}\n{body}"
-        raw = self.template.format(text=json.dumps(text, ensure_ascii=False)[1:-1])
+        raw = self.build_payload(title, body, level)
         req = urllib.request.Request(
             self.url,
             data=raw.encode("utf-8"),
@@ -149,7 +158,9 @@ class Notifier:
 
     channels: list[Channel] = field(default_factory=list)
     dedup_sec: float = 60.0
+    max_seen: int = 512  # 去重表上限，防长期运行内存泄漏
     _seen: dict[str, float] = field(default_factory=dict, repr=False)
+    _seen_level: dict[str, str] = field(default_factory=dict, repr=False)
     _lock: Any = field(default_factory=threading.Lock, repr=False)
 
     def notify(
@@ -160,17 +171,26 @@ class Notifier:
         *,
         fingerprint: str | None = None,
         extra: dict[str, Any] | None = None,
+        force: bool = False,
     ) -> int:
-        """投递一条通知，返回成功送达的通道数。"""
+        """投递一条通知，返回成功送达的通道数。
+
+        force=True 跳过去重（用于升级告警等必须送达的场景）。
+        """
         if level not in LEVEL_ORDER:
             raise ValueError(f"unknown level: {level}")
         key = fingerprint or f"{level}|{title}|{body}"
         now = time.time()
         with self._lock:
-            last = self._seen.get(key, 0.0)
-            if self.dedup_sec > 0 and now - last < self.dedup_sec:
-                return 0
+            self._prune_seen(now)
+            if not force and self.dedup_sec > 0:
+                last = self._seen.get(key, 0.0)
+                last_level = self._seen_level.get(key, level)
+                # 级别升级（warning -> critical）强制穿透，不被低级别抑制
+                if now - last < self.dedup_sec and LEVEL_ORDER[level] <= LEVEL_ORDER[last_level]:
+                    return 0
             self._seen[key] = now
+            self._seen_level[key] = level
 
         delivered = 0
         for ch in self.channels:
@@ -183,13 +203,26 @@ class Notifier:
                 print(f"[notifier] channel {ch.name} failed: {exc}", file=sys.stderr)
         return delivered
 
+    def _prune_seen(self, now: float) -> None:
+        """惰性清理：删过期项；仍超上限时按时间删最旧。调用方须持 _lock。"""
+        expired = [k for k, t in self._seen.items() if now - t > max(self.dedup_sec, 1.0) * 2]
+        for k in expired:
+            self._seen.pop(k, None)
+            self._seen_level.pop(k, None)
+        while len(self._seen) >= self.max_seen:
+            oldest = min(self._seen, key=self._seen.get)  # type: ignore[arg-type]
+            self._seen.pop(oldest, None)
+            self._seen_level.pop(oldest, None)
+
     def clear_dedup(self, fingerprint: str | None = None) -> None:
         """清除去重记录；fingerprint=None 清空全部。"""
         with self._lock:
             if fingerprint is None:
                 self._seen.clear()
+                self._seen_level.clear()
             else:
                 self._seen.pop(fingerprint, None)
+                self._seen_level.pop(fingerprint, None)
 
 
 def default_notifier(base_dir: Path, *, console: bool = True) -> Notifier:

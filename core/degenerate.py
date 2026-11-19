@@ -1,12 +1,14 @@
-"""退化重复检测 — 拦截模型陷入"哈哈哈哈..."死循环的垃圾输出。
+"""退化重复检测 — 拦截模型陷入"哈哈哈哈..."或整段复读的垃圾输出。
 
 问题现场：
     某 vision 模型对图片返回 1693 字符的"哈哈哈哈哈哈"，耗时 131 秒。
     事后截断已无意义（接收方早已收到垃圾），必须在流式 chunk 层面实时拦截。
 
-双判据（满足任一即判退化）：
+判据（满足任一即判退化）：
     1. 单字符连跑 >= min_run（默认 24）
-    2. n-gram 重复率 >= ratio（默认 n=15, ratio=0.5）
+    2. 最短周期：文本由某个长度 1..max_period 的子串重复 >= min_repeats 次构成
+       —— 能抓住 "abcd"*25、"这是重复的中文句子"*8 等任意长度周期，
+          不受"周期是否整除固定块"影响。
 
 用法：
     det = DegenerateDetector()
@@ -18,16 +20,15 @@
 from __future__ import annotations
 
 import re
-from collections import Counter
 from dataclasses import dataclass
 
 
 @dataclass
 class DegenerateConfig:
-    min_run: int = 24          # 单字符连跑阈值
-    ngram_n: int = 15          # n-gram 窗口
-    ngram_ratio: float = 0.5   # 最高频 n-gram 占比阈值
-    min_chars: int = 30        # 短文本不判 n-gram
+    min_run: int = 24           # 单字符连跑阈值
+    max_period: int = 32        # 检测的最长重复单元（覆盖绝大多数复读）
+    min_repeats: int = 4        # 重复次数阈值
+    min_chars: int = 24         # 短文本不判周期
 
 
 class DegenerateDetector:
@@ -35,36 +36,48 @@ class DegenerateDetector:
         self.config = config or DegenerateConfig()
         self._run_re = re.compile(r"(.)\1{%d,}" % (self.config.min_run - 1))
 
+    def shortest_period(self, text: str) -> tuple[int, int] | None:
+        """返回 (最短周期长度, 重复次数)；不满足重复阈值返回 None。
+
+        用 KMP 前缀函数的思路：对每个候选周期 p，验证 text == unit * n
+        （允许末尾不足一个周期的残段）。复杂度 O(max_period * len)。
+        """
+        cfg = self.config
+        n = len(text)
+        if n < cfg.min_chars:
+            return None
+        max_p = min(cfg.max_period, n // cfg.min_repeats)
+        for p in range(1, max_p + 1):
+            unit = text[:p]
+            repeats = n // p
+            if repeats < cfg.min_repeats:
+                continue
+            # 逐字符比对，允许末尾残段
+            ok = True
+            for i, ch in enumerate(text):
+                if ch != unit[i % p]:
+                    ok = False
+                    break
+            if ok:
+                return p, repeats
+        return None
+
     def is_degenerate(self, text: str) -> bool:
         if not text:
             return False
         if self._run_re.search(text):
             return True
-        cfg = self.config
-        if len(text) < cfg.min_chars:
-            return False
-        # 按固定块切分（非滑动窗口）：周期性文本用滑动窗口会被移位打散，
-        # 导致每个 gram 都不同。固定分块才能让"同一段反复"真正聚到一起。
-        grams = [text[i : i + cfg.ngram_n] for i in range(0, len(text), cfg.ngram_n)]
-        grams = [g for g in grams if len(g) == cfg.ngram_n]
-        if len(grams) < 2:
-            return False
-        top = Counter(grams).most_common(1)[0][1]
-        return top / len(grams) >= cfg.ngram_ratio
+        return self.shortest_period(text) is not None
 
     def reason(self, text: str) -> str:
         """给出判定原因，便于记录到 failed_payload。"""
         if not text:
             return "empty"
-        if self._run_re.search(text):
-            m = self._run_re.search(text)
-            return f"char_run>={self.config.min_run} (ch={m.group(1)!r})" if m else "char_run"
-        cfg = self.config
-        if len(text) >= cfg.min_chars:
-            grams = [text[i : i + cfg.ngram_n] for i in range(0, len(text), cfg.ngram_n)]
-            grams = [g for g in grams if len(g) == cfg.ngram_n]
-            if len(grams) >= 2:
-                g, c = Counter(grams).most_common(1)[0]
-                if c / len(grams) >= cfg.ngram_ratio:
-                    return f"ngram_repeat={c}/{len(grams)} ({g!r})"
+        m = self._run_re.search(text)
+        if m:
+            return f"char_run>={self.config.min_run} (ch={m.group(1)!r})"
+        period = self.shortest_period(text)
+        if period:
+            p, repeats = period
+            return f"period={p} repeats={repeats} (unit={text[:p]!r})"
         return "normal"

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
-import mimetypes
+import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -57,16 +57,25 @@ PHASE_LABEL = {
 
 
 def _status_html(state: dict[str, Any], alerts: list[dict[str, Any]]) -> str:
+    import html
+
     phase = state.get("phase", "idle")
     tripped = state.get("is_tripped", False)
     color = LEVEL_COLOR["critical"] if tripped else LEVEL_COLOR["info"]
-    label = PHASE_LABEL.get(phase, phase)
+    # 标签走白名单映射，未知值统一显示"未知"，不把原始 phase 输出（防注入）
+    label = PHASE_LABEL.get(phase, "未知")
+    # 所有动态内容转义，防存储型 XSS（告警正文可能来自异常文本/外部事件）
     rows = "".join(
-        f'<tr><td>{a.get("level","")}</td><td>{a.get("title","")}</td>'
-        f'<td>{a.get("body","")}</td></tr>'
+        "<tr><td>{}</td><td>{}</td><td>{}</td></tr>".format(
+            html.escape(str(a.get("level", ""))),
+            html.escape(str(a.get("title", ""))),
+            html.escape(str(a.get("body", ""))),
+        )
         for a in alerts
     )
+    fail_count = html.escape(str(state.get("fail_count", 0)))
     return f"""<!doctype html><html lang="zh"><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">
 <title>接入层状态</title>
 <style>
 body{{font-family:system-ui,sans-serif;margin:2rem;color:#2C2C2A}}
@@ -76,7 +85,7 @@ td,th{{border:1px solid #D3D1C7;padding:.5rem;text-align:left;font-size:13px}}
 </style>
 <h1>接入层状态</h1>
 <p class="badge">{label}</p>
-<p>连续失败：<b>{state.get("fail_count",0)}</b>　可自动重试：{'否' if tripped else '是'}</p>
+<p>连续失败：<b>{fail_count}</b>　可自动重试：{'否' if tripped else '是'}</p>
 <h2>最近告警</h2>
 <table><tr><th>级别</th><th>标题</th><th>内容</th></tr>{rows}</table>
 </html>"""
@@ -91,6 +100,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(raw)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(raw)
 
@@ -120,6 +131,12 @@ def main() -> None:
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--host", default="127.0.0.1")
     ns = ap.parse_args()
+    if ns.host not in ("127.0.0.1", "localhost", "::1"):
+        print(
+            f"警告：面板绑定到 {ns.host}（非本机回环），且无任何鉴权。"
+            "任何人都能读取状态与告警内容。请放在受控内网或反向代理之后。",
+            file=sys.stderr,
+        )
     Handler.state_path = Path(ns.state)
     Handler.alerts_path = Path(ns.alerts)
     srv = ThreadingHTTPServer((ns.host, ns.port), Handler)
