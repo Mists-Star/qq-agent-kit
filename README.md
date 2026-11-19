@@ -8,6 +8,8 @@
 
 **核心特点：登录失败优先告警、绝不无限重试。** 这一条是硬规则，见 [SAFETY.md](docs/SAFETY.md)。
 
+**跨平台**：核心逻辑在 Windows / macOS / Linux 均可运行（Python 3.10+，标准库为主）。协议端 NapCat 支持 Windows 原生、Mac 安装器、Docker 三种方式，框架只需通过 OneBot v11 连接——详见 [USAGE.md](USAGE.md)。
+
 ---
 
 ## 为什么有这个项目

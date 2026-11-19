@@ -5,28 +5,38 @@
     无头版被平台踢下线 -> 回退二维码 -> 卡死。多启动源是常见诱因。
 
 设计：
-    - 文件锁 + PID 身份，进程存活用 ctypes 校验（不是 os.kill(pid,0)，沙箱会假阴性）
-    - Windows 下 os.remove 抛 WinError 32 = 真被占用（金标准）
+    - 文件锁 + PID 身份，进程存活用系统 API 校验（不是裸 kill(pid,0)）
+    - O_EXCL 冲突一律用 FileExistsError 判断，Windows / macOS / Linux 通用
     - 死 PID 的残留锁自动接管（有限重试）
     - 进程名二次校验，防 PID 复用误伤
+
+跨平台：Windows 用 OpenProcess + tasklist，POSIX 用 kill(pid,0) + ps。
 """
 from __future__ import annotations
 
 import ctypes
+import errno
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
 
+IS_WINDOWS = sys.platform == "win32"
+
 
 def _pid_alive(pid: int) -> bool:
-    """Windows 用 OpenProcess 判断，比 kill(pid,0) 可靠。"""
+    """判断 PID 是否存活。Windows 用 OpenProcess，POSIX 用 kill(pid,0)。"""
     if pid <= 0:
         return False
-    if sys.platform != "win32":
+    if not IS_WINDOWS:
         try:
             os.kill(pid, 0)
             return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True  # 进程存在但无权发信号
         except OSError:
             return False
     PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
@@ -44,17 +54,21 @@ def _pid_alive(pid: int) -> bool:
 
 def _is_python_process(pid: int) -> bool:
     """进程名二次校验；取不到就保守返回 True（宁可拒启不误伤）。"""
-    if sys.platform != "win32":
-        return True
     try:
-        import subprocess
-
-        out = subprocess.run(
-            ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
-            capture_output=True,
-            text=True,
-            timeout=3,
-        ).stdout.lower()
+        if IS_WINDOWS:
+            out = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                capture_output=True,
+                text=True,
+                timeout=3,
+            ).stdout.lower()
+        else:
+            out = subprocess.run(
+                ["ps", "-p", str(pid), "-o", "comm="],
+                capture_output=True,
+                text=True,
+                timeout=3,
+            ).stdout.lower()
         return "python" in out or not out.strip()
     except Exception:
         return True
@@ -75,13 +89,18 @@ class SingleInstanceLock:
                 os.close(fd)
                 self.acquired = True
                 return True
+            except FileExistsError:
+                # O_EXCL 冲突 = 锁文件已存在（三平台通用信号）
+                # Windows 上异常类是 FileExistsError，不依赖 winerror 属性
+                if self._holder_alive():
+                    return False  # 真被活着的实现占用
+                self._remove_residual()  # 残留锁，清掉重试
+                continue
             except OSError as exc:
-                if getattr(exc, "winerror", None) == 32:
-                    # 真被别的进程占用
+                # remove 时 Windows 可能抛 WinError 32（文件被占），POSIX 用 EACCES/EBUSY
+                if getattr(exc, "winerror", None) == 32 or exc.errno in (errno.EACCES, errno.EBUSY):
                     if self._holder_alive():
                         return False
-                    self._remove_residual()
-                    continue
                 raise
         return False
 

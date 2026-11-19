@@ -13,12 +13,53 @@
 | 模型 API | 可选。框架不内置模型，需自己提供 `generate_reply` 回调 |
 
 核心模块（登录守护、切句、频控、单实例）**零第三方依赖**，标准库即可运行。
-只有用到异步 WS 或系统气泡时才需要可选依赖：
+只有用到异步 WS 或系统气泡时才需要可选依赖。
+
+**平台支持**：Windows / macOS / Linux 均可运行核心逻辑。
 
 ```bash
+# Windows
 python -m venv .venv
-.venv\Scripts\pip install websockets notifypy   # 按需，可都不装
+.venv\Scripts\activate
+pip install websockets notifypy   # 按需，可都不装
+
+# macOS / Linux
+python3 -m venv .venv
+source .venv/bin/activate
+pip install websockets notifypy   # 按需，可都不装；系统气泡在 POSIX 下自动降级（不弹）
 ```
+
+平台差异说明：
+
+| 能力 | Windows | macOS / Linux |
+|------|---------|---------------|
+| 核心逻辑（登录守护/切句/频控/单实例锁） | ✅ | ✅ |
+| 单实例进程存活判断 | OpenProcess + tasklist | `kill(pid,0)` + `ps` |
+| 系统托盘气泡告警 | notifypy 支持 | 自动降级（用文件/控制台/webhook 通道） |
+| 协议端 NapCat | 原生支持 | Docker / WSL2（注意固定网络环境） |
+
+> POSIX 下系统气泡通道会静默跳过，不会导致启动失败。告警仍会写入 `logs/alerts.jsonl` 并从控制台输出。
+
+### 关于协议端（真正的跨平台注意点）
+
+本框架通过 OneBot v11 连接协议端，**协议端与框架可以不在同一台机器**。所以 Mac/Linux 同样可用，三种部署方式任选：
+
+| 方式 | 适用 | 端口默认 |
+|------|------|----------|
+| **Mac 原生** | Apple Silicon Mac。装 QQ + 官方 NapCat Mac 安装器（NapCat-Mac-Installer），在 WebUI 扫码 | HTTP `3000` / WS `3001` |
+| **Docker** | macOS / Linux / Windows 通用。跑 `mlikiowa/napcat-docker`，浏览器开 WebUI 扫码 | 自定义映射（如 HTTP `13300` / WS `3001`） |
+| **远程协议端** | 协议端跑在 Windows/服务器/Nas，框架连它的 IP:端口 | 自定义 |
+
+**关键**：Mac 原生和 Docker 的默认端口是 `3000/3001`，和本框架默认值（`15700/15701`）不同。用 `--config` 覆盖即可，不用改代码：
+
+```json
+{
+  "ws_url": "ws://127.0.0.1:3001",
+  "http_url": "http://127.0.0.1:3000"
+}
+```
+
+流程就是：装协议端 → WebUI 扫码 → 改框架配置指向协议端端口 → `python bot.py`。跟 Windows 完全一样，只是端口和协议端安装方式不同。
 
 ---
 
