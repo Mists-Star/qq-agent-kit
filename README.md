@@ -91,6 +91,8 @@ qq-agent-kit/
 │   ├── qzone_bridge.py     QQ 空间桥接客户端（可选·action 白名单）
 │   └── __init__.py
 ├── bot.py                  主循环入口（串联所有核心）
+├── tools/
+│   └── ci_status.py        查询最近一次 CI 状态（可选工具）
 ├── modules/                可替换业务模块
 │   └── qzone.py            QQ 空间模块（可选·默认禁用·分级授权）
 ├── persona/
@@ -113,6 +115,14 @@ python -m unittest discover -s tests -v
 ```
 
 共 42 个测试，覆盖：登录熔断全流程、告警去重、重启后状态保持、人工确认解锁、退避上限、启动协调器、安全切句、退化检测、频控、空间模块分级授权与 action 白名单、主循环全链路集成。
+
+查看线上 CI 状态（无需安装 gh）：
+
+```bash
+python tools/ci_status.py                          # 匿名 GitHub API
+GITHUB_TOKEN=xxx python tools/ci_status.py         # 带 token（推荐）
+# 无法直连 GitHub 时，可设置 DEVHUB_API / DEVHUB_KEY 走兼容的加速转发端点
+```
 
 ---
 
