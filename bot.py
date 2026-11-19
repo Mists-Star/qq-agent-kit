@@ -22,9 +22,9 @@ from core.degenerate import DegenerateDetector
 from core.guard import FileStateStore, GuardConfig, LoginGuard
 from core.lock import SingleInstanceLock
 from core.modules import Context, ModuleRegistry
-from core.notifier import ConsoleChannel, FileChannel, Notifier
+from core.notifier import ConsoleChannel, FileChannel, Notifier, WebhookChannel
 from core.onebot import OneBotClient, OneBotConfig
-from core.ratelimit import RateConfig, RateLimiter
+from core.ratelimit import RateConfig, RateLimiter, resolve_rate_config
 from core.splitter import safe_sentence_cut
 
 GenerateReply = Callable[[Context], Awaitable[str | None]]
@@ -32,7 +32,10 @@ GenerateReply = Callable[[Context], Awaitable[str | None]]
 
 @dataclass
 class BotConfig:
-    """主循环配置。可用 --config 指向一个 JSON 文件覆盖。"""
+    """主循环配置。可用 --config 指向一个 JSON 文件覆盖。
+
+    额度管控：默认 limit_preset="strict"（最严档），可用逐项字段覆盖。
+    """
 
     base_dir: Path = Path(".")
     ws_url: str = "ws://127.0.0.1:15701"
@@ -41,28 +44,77 @@ class BotConfig:
     expect_uin: int = 0
     max_failures: int = 3
     alert_tag: str = "QQ Bot"
-    per_minute: int = 30
-    per_hour: int = 200
-    per_day: int = 1000
-    ai_quota_day: int = 500
+    # 额度档位与逐项覆盖（None = 跟随档位）
+    limit_preset: str = "strict"
+    per_minute: int | None = None
+    per_hour: int | None = None
+    per_day: int | None = None
+    ai_quota_day: int | None = None
     send_interval_sec: float = 0.05  # 句间间隔，降低高频发送特征
+    webhook_url: str = ""            # 可选告警 webhook（企业微信/钉钉等）
+
+    # 字段类型约束
+    _STR_FIELDS = ("ws_url", "http_url", "access_token", "alert_tag", "limit_preset", "webhook_url")
+    _INT_FIELDS = ("expect_uin", "max_failures", "per_minute", "per_hour", "per_day", "ai_quota_day")
 
     @classmethod
     def from_json(cls, path: Path) -> "BotConfig":
-        data = json.loads(path.read_text(encoding="utf-8"))
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"配置文件 {path} 不是合法 JSON: {exc}") from exc
         if not isinstance(data, dict):
             raise ValueError(f"配置文件必须是 JSON 对象: {path}")
-        allowed = {f.name for f in cls.__dataclass_fields__.values()}  # type: ignore[attr-defined]
+        allowed = {f.name for f in cls.__dataclass_fields__.values() if not f.name.startswith("_")}
         unknown = set(data) - allowed
         if unknown:
             # 未知键明确报错，不静默忽略（否则拼错 expect_uin 也毫无提示）
             raise ValueError(f"未知配置项: {sorted(unknown)}（可用项: {sorted(allowed)}）")
+
         cfg = cls()
         for k, v in data.items():
             if k == "base_dir":
+                if not isinstance(v, str):
+                    raise ValueError(f"base_dir 必须是字符串路径，收到 {v!r}")
                 v = Path(v)
+            elif k in cls._STR_FIELDS:
+                if not isinstance(v, str):
+                    raise ValueError(f"{k} 必须是字符串，收到 {v!r}")
+            elif k in cls._INT_FIELDS:
+                # 字符串型数字强转（JSON 里加引号极常见）；None 表示跟随档位
+                if v is None and k in ("per_minute", "per_hour", "per_day", "ai_quota_day"):
+                    pass
+                else:
+                    try:
+                        v = int(v)
+                    except (ValueError, TypeError):
+                        raise ValueError(f"{k} 必须是整数，收到 {v!r}")
+                    if v < 0:
+                        raise ValueError(f"{k} 不能为负数，收到 {v}")
+            elif k == "send_interval_sec":
+                try:
+                    v = float(v)
+                except (ValueError, TypeError):
+                    raise ValueError(f"send_interval_sec 必须是数字，收到 {v!r}")
+                if v < 0:
+                    raise ValueError("send_interval_sec 不能为负数")
             setattr(cfg, k, v)
+
+        # 档位与覆盖值统一校验
+        cfg.resolve_rate_config()
         return cfg
+
+    def resolve_rate_config(self) -> RateConfig:
+        """按档位 + 逐项覆盖解析出最终频控配置（默认 strict 最严）。"""
+        return resolve_rate_config(
+            self.limit_preset,
+            {
+                "per_minute": self.per_minute,
+                "per_hour": self.per_hour,
+                "per_day": self.per_day,
+                "ai_quota_day": self.ai_quota_day,
+            },
+        )
 
 
 class BotApp:
@@ -76,22 +128,16 @@ class BotApp:
     ):
         self.config = config
         base = config.base_dir
-        self.notifier = Notifier(
-            channels=[FileChannel(path=base / "logs" / "alerts.jsonl"), ConsoleChannel()]
-        )
+        channels: list[Any] = [FileChannel(path=base / "logs" / "alerts.jsonl"), ConsoleChannel()]
+        if config.webhook_url:
+            channels.append(WebhookChannel(url=config.webhook_url))
+        self.notifier = Notifier(channels=channels)
         self.guard = LoginGuard(
             self.notifier,
             FileStateStore(base / "state" / "guard.json"),
             GuardConfig(max_failures=config.max_failures, alert_tag=config.alert_tag),
         )
-        self.limiter = RateLimiter(
-            RateConfig(
-                per_minute=config.per_minute,
-                per_hour=config.per_hour,
-                per_day=config.per_day,
-                ai_quota_day=config.ai_quota_day,
-            )
-        )
+        self.limiter = RateLimiter(config.resolve_rate_config())
         self.registry = registry or ModuleRegistry()
         self.generate_reply = generate_reply
         self.detector = DegenerateDetector()
@@ -198,7 +244,7 @@ class BotApp:
 
         if not replies and self.generate_reply:
             # AI 专用额度独立核算：与入站消息频控分开，真正防成本失控
-            ai_ok, ai_reason = self.limiter.check_and_consume(user_id, is_ai=True, skip_general=True)
+            ai_ok, ai_reason = self.limiter.check(user_id, is_ai=True)
             if not ai_ok:
                 self.notifier.notify(
                     title=f"[{self.config.alert_tag}] AI 额度已用尽",
@@ -207,8 +253,19 @@ class BotApp:
                     fingerprint="ai:quota_exhausted",
                 )
             else:
-                generated = await self.generate_reply(ctx)
+                try:
+                    generated = await self.generate_reply(ctx)
+                except Exception as exc:
+                    self.notifier.notify(
+                        title=f"[{self.config.alert_tag}] 生成失败",
+                        body=f"{type(exc).__name__}: {exc}"[:300],
+                        level="warning",
+                        fingerprint="ai:generate_fail",
+                    )
+                    generated = None
+                # 只在生成成功后扣额度：失败请求不白扣（P2-N8）
                 if generated:
+                    self.limiter.consume(user_id, is_ai=True)
                     replies.append(generated)
 
         for text_out in replies:

@@ -73,10 +73,33 @@ class FileStateStore:
             return {}
 
     def save(self, data: dict[str, Any]) -> None:
+        """原子写：唯一临时文件 + os.replace，避免并发实例互相覆盖 tmp。"""
+        import tempfile
+
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(self.path.suffix + ".tmp")
-        tmp.write_text(json.dumps(data, ensure_ascii=False, default=str), encoding="utf-8")
-        os.replace(tmp, self.path)
+        payload = json.dumps(data, ensure_ascii=False, default=str)
+        fd, tmp_name = tempfile.mkstemp(prefix=self.path.name + ".", suffix=".tmp", dir=self.path.parent)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(payload)
+                f.flush()
+                os.fsync(f.fileno())
+            # Windows 上偶发 WinError 32（被杀软/索引短暂占用），有限重试
+            for attempt in range(3):
+                try:
+                    os.replace(tmp_name, self.path)
+                    return
+                except OSError as exc:
+                    if getattr(exc, "winerror", None) == 32 and attempt < 2:
+                        time.sleep(0.05 * (attempt + 1))
+                        continue
+                    raise
+        finally:
+            if os.path.exists(tmp_name):
+                try:
+                    os.remove(tmp_name)
+                except OSError:
+                    pass
 
 
 class MemoryStateStore:
@@ -263,6 +286,9 @@ class LoginGuard:
             return self.state
         self.state.phase = LoginPhase.IDLE
         self.state.last_error = error
+        # 运行中断与登录失败是不同阶段：清零避免残留计数导致下次提前熔断
+        self.state.fail_count = 0
+        self.state.notified = False
         self._persist()
         return self.state
 

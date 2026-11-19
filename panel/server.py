@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -30,18 +31,34 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 
 def _read_jsonl(path: Path, limit: int = 50) -> list[dict[str, Any]]:
+    """从文件尾部读取最后 limit 条，不把整个文件读进内存。"""
     if not path.exists():
         return []
     out: list[dict[str, Any]] = []
     try:
-        for line in path.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            try:
-                out.append(json.loads(line))
-            except Exception:
-                continue
-        return out[-limit:][::-1]
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            block = 8192
+            pos = size
+            pending = b""
+            while pos > 0 and len(out) < limit:
+                read_size = min(block, pos)
+                pos -= read_size
+                f.seek(pos)
+                chunk = f.read(read_size) + pending
+                lines = chunk.split(b"\n")
+                pending = lines.pop(0)  # 半行留到下一轮
+                for line in reversed(lines):
+                    if not line.strip():
+                        continue
+                    try:
+                        out.append(json.loads(line.decode("utf-8")))
+                    except Exception:
+                        continue
+                    if len(out) >= limit:
+                        break
+        return out[:limit]
     except Exception:
         return []
 
@@ -67,7 +84,7 @@ def _status_html(state: dict[str, Any], alerts: list[dict[str, Any]]) -> str:
     # 所有动态内容转义，防存储型 XSS（告警正文可能来自异常文本/外部事件）
     rows = "".join(
         "<tr><td>{}</td><td>{}</td><td>{}</td></tr>".format(
-            html.escape(str(a.get("level", ""))),
+            html.escape(str(a.get("level", "")) if a.get("level") in LEVEL_COLOR else "未知"),
             html.escape(str(a.get("title", ""))),
             html.escape(str(a.get("body", ""))),
         )
@@ -106,14 +123,15 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(raw)
 
     def do_GET(self) -> None:  # noqa: N802
-        if self.path.startswith("/api/status"):
+        route = self.path.split("?", 1)[0]  # 精确匹配，忽略 query
+        if route == "/api/status":
             st = _read_json(self.state_path)
             st["is_tripped"] = st.get("phase") == "wait_manual"
             st["can_attempt"] = st.get("phase") != "wait_manual"
             self._send(200, json.dumps(st, ensure_ascii=False), "application/json")
-        elif self.path.startswith("/api/alerts"):
+        elif route == "/api/alerts":
             self._send(200, json.dumps(_read_jsonl(self.alerts_path), ensure_ascii=False), "application/json")
-        elif self.path == "/":
+        elif route == "/":
             st = _read_json(self.state_path)
             st["is_tripped"] = st.get("phase") == "wait_manual"
             self._send(200, _status_html(st, _read_jsonl(self.alerts_path)), "text/html; charset=utf-8")

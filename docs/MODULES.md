@@ -6,7 +6,7 @@
 
 ```python
 # modules/hello.py
-from core.modules import Module, Hook
+from core.modules import Module, Context
 
 class HelloModule(Module):
     name = "hello"
@@ -34,4 +34,4 @@ class HelloModule(Module):
 
 ## 热重载
 
-模块内核支持开关、替换与热重载：注册的工具、钩子、定时任务都挂在模块名下，停用时会一并撤销。（接口版本化，详见后续版本。）
+当前支持：注册、按名替换（同名注册会移除旧钩子）、开关（enable/disable）。热重载与定时任务调度尚未实现；停用模块后其钩子不再触发，但 buf 中已入队的任务需调用方自行清理。

@@ -182,6 +182,19 @@ class RegressTestCase(unittest.TestCase):
         asyncio.run(m.on_private_message(ctx2))
         self.assertEqual(fb.calls[0][0], "delete_msg", "确认后应执行")
 
+    # P1-N6: 日志轮转
+    def test_p1_log_rotation(self):
+        from core.notifier import _atomic_write_jsonl
+
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "alerts.jsonl"
+            for i in range(20):
+                _atomic_write_jsonl(p, {"i": i, "pad": "x" * 20000}, max_bytes=1024)
+            backup = p.with_suffix(p.suffix + ".1")
+            self.assertTrue(p.exists())
+            self.assertTrue(backup.exists(), "超限应轮转生成 .1")
+            self.assertLess(p.stat().st_size, 100000, "主文件应被轮转清空")
+
     # P1-2: _send 异步不阻塞（to_thread 路径）
     def test_p1_send_is_async(self):
         self.assertTrue(asyncio.iscoroutinefunction(BotApp._send))

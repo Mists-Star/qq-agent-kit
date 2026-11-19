@@ -12,8 +12,8 @@
 | 协议端 | NapCat / LLOneBot 等任意 OneBot v11 实现，先扫码登录好 |
 | 模型 API | 可选。框架不内置模型，需自己提供 `generate_reply` 回调 |
 
-核心模块（登录守护、切句、频控、单实例）**零第三方依赖**，标准库即可运行。
-只有用到异步 WS 或系统气泡时才需要可选依赖。
+核心库（登录守护、切句、频控、单实例）**零第三方依赖**，标准库即可单独 import 和测试。
+但**跑主程序 `python bot.py` 必须装 `websockets`**（WS 事件接收），启动时会检查，缺失即明确报错退出。
 
 **平台支持**：Windows / macOS / Linux 均可运行核心逻辑。
 
@@ -21,13 +21,16 @@
 # Windows
 python -m venv .venv
 .venv\Scripts\activate
-pip install websockets notifypy   # 按需，可都不装
+pip install -r requirements.txt        # 必装：websockets
 
 # macOS / Linux
 python3 -m venv .venv
 source .venv/bin/activate
-pip install websockets notifypy   # 按需，可都不装；系统气泡在 POSIX 下自动降级（不弹）
+pip install -r requirements.txt        # 必装：websockets
 ```
+
+系统气泡告警是可选增强：需要时 `pip install notify-py`（注意 pip 包名是 `notify-py`，
+代码里 import 名是 `notifypy`）。POSIX 下气泡通道自动降级，告警仍写文件与控制台。
 
 平台差异说明：
 
@@ -101,7 +104,38 @@ python bot.py --config myconfig.json
 }
 ```
 
-字段含义见 `config.example.json`（全字段模板）。未知键会**明确报错**，不会静默忽略——拼错 `expect_uin` 会立刻提示。
+字段含义见 `config.example.json`（全字段模板）。未知键会**明确报错**，不会静默忽略——拼错 `expect_uin` 会立刻提示；字符串型数字（如 `"expect_uin": "123"`）会自动转成整数，负数与非数字报错。
+
+### 额度管控档位（默认最严）
+
+频控与 AI 额度用**档位预设**管理，默认 `strict`（最严档），可按需选档或逐项覆盖：
+
+| 档位 | 每分钟 | 每小时 | 每天 | AI/天 | 适用 |
+|------|-------:|-------:|-----:|------:|------|
+| `strict`（默认） | 6 | 40 | 200 | 30 | 防风控/防成本，个人自用推荐 |
+| `balanced` | 20 | 120 | 600 | 150 | 中等活跃度 |
+| `relaxed` | 60 | 400 | 2000 | 600 | 高活跃群聊 |
+| `custom` | 自定义 | 自定义 | 自定义 | 自定义 | 未指定的项用 strict 兜底 |
+
+选档：
+
+```json
+{ "limit_preset": "balanced" }
+```
+
+在档位基础上单项覆盖（例如选了 balanced 但想更严的 AI 额度）：
+
+```json
+{ "limit_preset": "balanced", "ai_quota_day": 50 }
+```
+
+完全自定义（未给的项用 strict 兜底，避免漏配导致管控失效）：
+
+```json
+{ "limit_preset": "custom", "per_minute": 10, "per_hour": 80, "ai_quota_day": 100 }
+```
+
+AI 额度单独核算：入站消息走普通三层频控，AI 回复只在**生成成功**后扣 AI 额度（失败不白扣）。未知档位会明确报错。
 
 > `expect_uin` 强烈建议填——它会核对实际登录的号，防止连错账号触发风控。
 
@@ -210,6 +244,7 @@ reg.enable("qzone")               # 模块默认禁用，必须显式启用
 解除熔断（人工确认后）：
 
 ```python
+from pathlib import Path
 from core.guard import FileStateStore, LoginGuard
 from core.notifier import default_notifier
 
@@ -237,7 +272,7 @@ g.human_confirm()
 python -m unittest discover -s tests -v
 ```
 
-当前 48+ 个测试，覆盖：登录熔断、告警去重与分级、重启保持、切句括号、退化检测（多周期）、频控与 AI 额度、空间授权、主循环全链路。
+当前 66+ 个测试，覆盖：登录熔断、告警去重与分级、重启保持、切句括号、退化检测（多周期）、频控与 AI 额度、空间授权、主循环全链路。
 
 ---
 

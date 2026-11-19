@@ -5,9 +5,13 @@
   "expect_uin": 0,
   "max_failures": 3,
   "alert_tag": "My Bot",
-  "per_minute": 30,
-  "per_hour": 200,
-  "per_day": 1000,
-  "ai_quota_day": 500,
-  "send_interval_sec": 0.05
+
+  "limit_preset": "strict",
+  "per_minute": null,
+  "per_hour": null,
+  "per_day": null,
+  "ai_quota_day": null,
+
+  "send_interval_sec": 0.05,
+  "webhook_url": ""
 }

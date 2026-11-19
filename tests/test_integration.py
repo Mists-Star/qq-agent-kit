@@ -20,7 +20,7 @@ class FakeClient:
 
     @staticmethod
     def check_ws_dependency() -> str:
-        return ""  # 模拟依赖就绪，真实检查由 test_onebot 覆盖
+        return ""  # 模拟依赖就绪；真实检查见 tests/test_onebot.py
 
     def verify_login(self):
         return (True, "ok") if self.login_ok else (False, "login expired")
@@ -106,8 +106,10 @@ class IntegrationTestCase(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             client = FakeClient()
             app = make_app(Path(d), client)
-            app.config.per_minute = 1
-            app.limiter.config.per_minute = 1
+            # RateConfig 不可变：用严格档位重建 limiter 模拟低阈值
+            from core.ratelimit import RateConfig, RateLimiter
+
+            app.limiter = RateLimiter(RateConfig(per_minute=1, per_hour=10, per_day=100, ai_quota_day=100))
             evt = {"post_type": "message", "user_id": 1005, "group_id": 0, "raw_message": "hi"}
 
             async def gen(ctx):

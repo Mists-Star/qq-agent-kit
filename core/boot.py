@@ -98,7 +98,7 @@ def sync_login_with_guard(
     *,
     notify_scan_needed: Callable[[], None] | None = None,
 ) -> BootResult:
-    """同步版，供 autostart.py 这类脚本直接调用。"""
+    """同步版，供同步启动脚本直接调用。"""
     guard.restore()
     ok, reason = guard.can_attempt()
     if not ok:

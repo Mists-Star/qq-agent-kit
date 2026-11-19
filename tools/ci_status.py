@@ -23,13 +23,14 @@ WORKFLOW = os.environ.get("CI_WORKFLOW", "tests.yml")
 API = f"https://api.github.com/repos/{REPO}/actions/workflows/{WORKFLOW}/runs?per_page=1"
 
 
-def _fetch(url: str, headers: dict[str, str] | None = None) -> dict:
+def _fetch(url: str, headers: dict[str, str] | None = None, payload: dict | None = None) -> dict:
     # 本地/内网请求绕过代理，外网请求用系统默认
     if url.startswith("http://127.") or url.startswith("http://localhost"):
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     else:
         opener = urllib.request.build_opener()
-    req = urllib.request.Request(url, headers=headers or {})
+    data = json.dumps(payload).encode("utf-8") if payload is not None else None
+    req = urllib.request.Request(url, data=data, headers=headers or {})
     with opener.open(req, timeout=60) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
@@ -40,11 +41,12 @@ def main() -> int:
     devhub_key = os.environ.get("DEVHUB_KEY", "")
 
     if devhub_api and devhub_key:
-        # 走加速转发端点（约定：action=gh_proxy_fetch）
-        qs = urllib.parse.urlencode(
-            {"action": "gh_proxy_fetch", "key": devhub_key, "url": API}
+        # 走加速转发端点：key 放 POST body，不进 URL query（防 access log 泄漏）
+        data = _fetch(
+            devhub_api.rstrip("/"),
+            headers={"Content-Type": "application/json"},
+            payload={"action": "gh_proxy_fetch", "key": devhub_key, "url": API},
         )
-        data = _fetch(f"{devhub_api.rstrip('/')}?{qs}")
     else:
         headers = {"Accept": "application/vnd.github+json"}
         if token:

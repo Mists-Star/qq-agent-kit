@@ -18,6 +18,14 @@ from dataclasses import dataclass
 from typing import Any, Callable, Awaitable
 
 
+def _mask_uin(uin: Any) -> str:
+    """账号号脱敏：保留前3后3，中间打码（告警会落盘/经面板展示）。"""
+    s = str(uin)
+    if len(s) <= 6:
+        return "*" * len(s)
+    return f"{s[:3]}***{s[-3:]}"
+
+
 @dataclass
 class OneBotConfig:
     ws_url: str = "ws://127.0.0.1:15701"
@@ -80,8 +88,9 @@ class OneBotClient:
         except Exception as exc:
             return False, f"get_login_info 失败: {exc}"
         if self.config.expect_uin and uin != self.config.expect_uin:
-            return False, f"登录号 {uin} != 期望 {self.config.expect_uin}"
-        return True, f"登录号 {uin}"
+            # 账号号脱敏：告警会落盘并经面板读取，不写完整号码
+            return False, f"登录号 {_mask_uin(uin)} != 期望 {_mask_uin(self.config.expect_uin)}"
+        return True, f"登录号 {_mask_uin(uin)}"
 
     # ---------- WS 事件循环 ----------
     @staticmethod

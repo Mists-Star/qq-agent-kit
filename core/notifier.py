@@ -28,10 +28,20 @@ from typing import Any, Callable
 LEVEL_ORDER = {"info": 0, "warning": 1, "critical": 2}
 
 
-def _atomic_write_jsonl(path: Path, payload: dict[str, Any]) -> None:
-    """追加一行 JSON 到 jsonl，用 O_APPEND 保证多进程安全。"""
+def _atomic_write_jsonl(path: Path, payload: dict[str, Any], *, max_bytes: int = 2 * 1024 * 1024) -> None:
+    """追加一行 JSON 到 jsonl，用 O_APPEND 保证多进程安全；超限时轮转。
+
+    轮转策略：超过 max_bytes（默认 2MB）时改名为 .1（覆盖旧 .1），
+    再新建文件。避免长期运行日志无限增长拖垮面板读取。
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     line = json.dumps(payload, ensure_ascii=False, default=str) + "\n"
+    try:
+        if path.exists() and path.stat().st_size + len(line.encode("utf-8")) > max_bytes:
+            backup = path.with_suffix(path.suffix + ".1")
+            os.replace(path, backup)  # 旧 .1 被覆盖，只保留最近两代
+    except OSError:
+        pass  # 轮转失败不影响本次写入
     with open(path, "a", encoding="utf-8") as f:
         f.write(line)
 
@@ -113,8 +123,7 @@ class WebhookChannel(Channel):
             ensure_ascii=False,
         )
 
-    def send(self, title: str, body: str, level: str, extra: dict[str, Any] | None = None) -> bool:
-        raw = self.build_payload(title, body, level)
+    def _post(self, raw: str) -> bool:
         req = urllib.request.Request(
             self.url,
             data=raw.encode("utf-8"),
@@ -123,6 +132,20 @@ class WebhookChannel(Channel):
         )
         with urllib.request.urlopen(req, timeout=self.timeout) as resp:
             return 200 <= resp.status < 300
+
+    def send(self, title: str, body: str, level: str, extra: dict[str, Any] | None = None) -> bool:
+        import asyncio
+        import threading
+
+        raw = self.build_payload(title, body, level)
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return self._post(raw)  # 非事件循环线程：同步发送
+        # 事件循环线程：fire-and-forget，绝不阻塞主循环（告警 best-effort）
+        t = threading.Thread(target=self._post, args=(raw,), daemon=True)
+        t.start()
+        return True  # 已受理投递，实际结果后台尽力而为
 
 
 @dataclass
